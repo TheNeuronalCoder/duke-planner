@@ -1,5 +1,7 @@
 import re
 
+from django.db.models import Case, IntegerField, Q, Value, When
+
 from ..models import Course
 
 
@@ -31,6 +33,49 @@ def course_json(course, details=False):
         data['prerequisites'] = course.prerequisites
         data['corequisites'] = course.corequisites
     return data
+
+
+def all_terms(fields, terms):
+    """Q matching rows where every term appears (case-insensitively) in some field."""
+    q = Q()
+    for term in terms:
+        any_field = Q()
+        for field in fields:
+            any_field |= Q(**{f'{field}__icontains': term})
+        q &= any_field
+    return q
+
+
+def search_courses(query, subjects=None):
+    """Courses matching `query` as a code ("COB 191", "cob19", "COB") or as words
+    that must all appear in the title, ranked exact code, then code prefix, then
+    title match. An empty query matches every course."""
+    courses = Course.objects.all()
+    if subjects:
+        courses = courses.filter(prefix__in=subjects)
+    if not query:
+        return courses
+
+    code_match = re.fullmatch(r'([A-Za-z]+)\s*(\d\w*)?', query)
+    exact = prefix = Q(pk__in=[])
+    if code_match:
+        subject, number = code_match.group(1).upper(), code_match.group(2)
+        if number:
+            exact = Q(prefix=subject, number__iexact=number)
+            prefix = Q(prefix=subject, number__istartswith=number)
+        else:
+            prefix = Q(prefix=subject)
+    title = all_terms(['title'], query.split())
+
+    return courses.filter(exact | prefix | title).annotate(
+        rank=Case(
+            When(exact, then=Value(0)),
+            When(prefix, then=Value(1)),
+            When(title__istartswith=query, then=Value(2)),
+            default=Value(3),
+            output_field=IntegerField(),
+        )
+    ).order_by('rank', 'prefix', 'number')
 
 
 def lookup_courses(codes):

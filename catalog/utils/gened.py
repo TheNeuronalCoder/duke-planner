@@ -42,6 +42,30 @@ def cluster_id_for(text):
     return None
 
 
+@lru_cache(maxsize=1)
+def areas_by_course():
+    """Normalized course code -> codes of the Gen Ed areas it counts toward."""
+    areas = {}
+    for cluster in load()['clusters']:
+        for area in cluster['areas']:
+            for c in area['courses']:
+                areas.setdefault(normalize_code(c['code']), []).append(area['code'])
+    return areas
+
+
+def course_codes_for(key):
+    """Codes of the courses in the Gen Ed cluster or area `key` names, by id or
+    code ("C2", "C2L") or name ("Literature"), or None if nothing matches."""
+    wanted = key.strip().lower()
+    for cluster in load()['clusters']:
+        if wanted in (cluster['id'].lower(), cluster['name'].lower()):
+            return [c['code'] for area in cluster['areas'] for c in area['courses']]
+        for area in cluster['areas']:
+            if wanted in (area['code'].lower(), area['name'].lower()):
+                return [c['code'] for c in area['courses']]
+    return None
+
+
 def _assign(areas, candidates, exclusive):
     """Pick which taken courses count toward each area of one cluster.
 

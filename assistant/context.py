@@ -1,7 +1,8 @@
 """The student's plan as compact text for Duke AI's system prompt.
 
 Groq's free tier limits tokens per minute, so this summarizes the plan rather
-than sending the JSON the student views return.
+than sending the JSON the student views return. Requirement options are listed
+by code only; the model looks up details with the tools in tools.py.
 """
 
 from django.conf import settings
@@ -36,7 +37,7 @@ def _open_rules(node, depth=0):
         line += f' [choose {node["min_count"]}]'
     elif node.get('min_credits'):
         line += f' [{node["min_credits"]} cr]'
-    options = [_course(c) for c in node.get('courses', []) if not c['taken']]
+    options = [c['code'] for c in node.get('courses', []) if not c['taken']]
     if options:
         line += f' options: {_codes(options)}'
     if node.get('satisfied_by'):

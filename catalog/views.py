@@ -1,6 +1,6 @@
 import re
 
-from django.db.models import Case, IntegerField, Q, TextField, Value, When
+from django.db.models import Case, IntegerField, TextField, Value, When
 from django.db.models.functions import Cast
 from django.http import JsonResponse
 from rest_framework.decorators import (
@@ -9,20 +9,9 @@ from rest_framework.decorators import (
 from rest_framework.parsers import JSONParser
 from rest_framework.permissions import AllowAny
 
-from .models import Course, Program
+from .models import Program
 from .serializers import CourseSearchSerializer, CoursesSerializer, ProgramSearchSerializer
-from .utils.courses import course_json, lookup_courses
-
-
-def _all_terms(fields, terms):
-    """Q matching rows where every term appears (case-insensitively) in some field."""
-    q = Q()
-    for term in terms:
-        any_field = Q()
-        for field in fields:
-            any_field |= Q(**{f'{field}__icontains': term})
-        q &= any_field
-    return q
+from .utils.courses import all_terms, course_json, lookup_courses, search_courses as find_courses
 
 
 @api_view(['GET'])
@@ -67,30 +56,7 @@ def search_courses(request):
     params = serializer.validated_data
     query = params['q']
 
-    code_match = re.fullmatch(r'([A-Za-z]+)\s*(\d\w*)?', query)
-    exact = prefix = Q(pk__in=[])
-    if code_match:
-        subject, number = code_match.group(1).upper(), code_match.group(2)
-        if number:
-            exact = Q(prefix=subject, number__iexact=number)
-            prefix = Q(prefix=subject, number__istartswith=number)
-        else:
-            prefix = Q(prefix=subject)
-    title = _all_terms(['title'], query.split())
-
-    courses = Course.objects.filter(exact | prefix | title)
-    if params['subject']:
-        courses = courses.filter(prefix__in=params['subject'])
-    courses = courses.annotate(
-        rank=Case(
-            When(exact, then=Value(0)),
-            When(prefix, then=Value(1)),
-            When(title__istartswith=query, then=Value(2)),
-            default=Value(3),
-            output_field=IntegerField(),
-        )
-    ).order_by('rank', 'prefix', 'number')
-
+    courses = find_courses(query, params['subject'])
     return JsonResponse({'results': [course_json(c) for c in courses[:params['limit']]]})
 
 
@@ -112,7 +78,7 @@ def search_programs(request):
 
     programs = Program.objects.annotate(
         keywords_text=Cast('keywords', TextField())
-    ).filter(_all_terms(['name', 'keywords_text'], query.split()))
+    ).filter(all_terms(['name', 'keywords_text'], query.split()))
     if 'level' in params:
         programs = programs.filter(level=params['level'])
     if params['type']:
@@ -122,7 +88,7 @@ def search_programs(request):
             rank=Case(
                 When(name__istartswith=query, then=Value(0)),
                 When(name__icontains=query, then=Value(1)),
-                When(_all_terms(['name'], query.split()), then=Value(2)),
+                When(all_terms(['name'], query.split()), then=Value(2)),
                 default=Value(3),
                 output_field=IntegerField(),
             )
