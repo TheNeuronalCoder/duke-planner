@@ -9,7 +9,7 @@ from rest_framework.parsers import JSONParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.throttling import UserRateThrottle
 
-from . import tools
+from . import planner, tools
 from .context import Plan, build_context
 
 MAX_MESSAGES = 10
@@ -48,6 +48,10 @@ class AssistantThrottle(UserRateThrottle):
     scope = 'assistant'
 
 
+class PlanThrottle(UserRateThrottle):
+    scope = 'plan'
+
+
 def _valid_messages(body):
     """The chat history from the request body, or None if it's malformed."""
     messages = body.get('messages') if isinstance(body, dict) else None
@@ -83,24 +87,9 @@ def _complete(client, messages, plan):
         ).choices[0].message
         if last or not message.tool_calls:
             return (message.content or '').strip()
-        messages.append({
-            'role': 'assistant',
-            'content': message.content or '',
-            'tool_calls': [
-                {
-                    'id': call.id,
-                    'type': 'function',
-                    'function': {'name': call.function.name, 'arguments': call.function.arguments},
-                }
-                for call in message.tool_calls
-            ],
-        })
-        for call in message.tool_calls:
-            messages.append({
-                'role': 'tool',
-                'tool_call_id': call.id,
-                'content': tools.run(call.function.name, call.function.arguments, plan),
-            })
+        tools.append_calls(
+            messages, message, lambda call: tools.run(call.function.name, call.function.arguments, plan)
+        )
 
 
 @api_view(['POST'])
@@ -155,3 +144,67 @@ def chat(request):
         )
 
     return JsonResponse({'reply': reply})
+
+
+@api_view(['POST'])
+@parser_classes([JSONParser])
+@permission_classes([IsAuthenticated])
+@throttle_classes([PlanThrottle])
+def plan(request):
+    """POST /assistant/plan/
+
+    Drafts the semesters the signed-in account has left until graduation with
+    Duke AI (see planner.py). Only terms after the current one that the
+    account has no semester for are planned; nothing is saved. The client
+    applies a draft with POST /student/semesters/.
+
+    All fields are optional: `max_credits` per term (12-18, default 15),
+    `include_summer` (default false), `graduate_by` (the last term to plan,
+    default six years out) and free-text `preferences`.
+
+    Returns {"semesters": [{"term", "year", "credits", "courses": [{"code",
+    "title", "credits", ..., "fills": [...]}]}], "notes": "...", "warnings":
+    [courses or terms left out and why], "unsatisfied": [what the plan still
+    misses]}. Returns a 400 for bad options or no terms to plan, a 409 with
+    `issues` if the account isn't valid, and 429, 502 and 503 as chat does.
+
+    Sample request body:
+    {"max_credits": 15, "include_summer": false, "graduate_by": {"term": "spring", "year": 2029},
+     "preferences": "Lighter fall semesters; I'm interested in machine learning."}
+    """
+    try:
+        options = planner.parse_options(request.data)
+    except planner.PlanError as e:
+        return JsonResponse({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    if not settings.GROQ_API_KEY:
+        return JsonResponse(
+            {'error': 'Duke AI is not configured.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE
+        )
+
+    try:
+        data = planner.generate(request.user, options)
+    except planner.InvalidAccount as e:
+        return JsonResponse(
+            {
+                'error': 'Fix the issues on your account before generating a plan.',
+                'issues': [
+                    {'code': i.code, 'message': i.message, 'severity': i.severity.value}
+                    for i in e.issues
+                ],
+            },
+            status=status.HTTP_409_CONFLICT,
+        )
+    except planner.PlanError as e:
+        return JsonResponse({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    except groq.RateLimitError:
+        return JsonResponse(
+            {'error': 'Duke AI is busy right now. Try again in a minute.'},
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+    except groq.APIError:
+        return JsonResponse(
+            {'error': "Duke AI couldn't draft a plan right now. Try again later."},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    return JsonResponse(data)

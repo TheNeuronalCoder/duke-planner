@@ -197,3 +197,22 @@ def run(name, arguments, plan):
         logger.exception('Duke AI tool %s failed', name)
         result = {'error': f'{name} failed. Answer without it or try another search.'}
     return json.dumps(result, ensure_ascii=False)
+
+
+def append_calls(messages, message, results):
+    """Appends `message`, a model reply with tool calls, to `messages`, then
+    the result of each call, given by `results(call)` as a string."""
+    messages.append({
+        'role': 'assistant',
+        'content': message.content or '',
+        'tool_calls': [
+            {
+                'id': call.id,
+                'type': 'function',
+                'function': {'name': call.function.name, 'arguments': call.function.arguments},
+            }
+            for call in message.tool_calls
+        ],
+    })
+    for call in message.tool_calls:
+        messages.append({'role': 'tool', 'tool_call_id': call.id, 'content': results(call)})

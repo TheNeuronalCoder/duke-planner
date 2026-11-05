@@ -15,4 +15,4 @@ RUN DJANGO_SECRET_KEY=build-only DEBUG=False python manage.py collectstatic --no
 
 EXPOSE 8080
 ENTRYPOINT ["./entrypoint.sh"]
-CMD ["gunicorn", "duke_planner.wsgi:application", "--bind", "0.0.0.0:8080", "--workers", "2"]
+CMD ["gunicorn", "duke_planner.wsgi:application", "--bind", "0.0.0.0:8080", "--workers", "2", "--timeout", "120"]

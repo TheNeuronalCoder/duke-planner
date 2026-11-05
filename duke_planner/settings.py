@@ -76,6 +76,8 @@ REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_RATES': {
         # Keeps one user from using up the shared Groq free-tier quota.
         'assistant': '20/min',
+        # Each plan takes several model calls with long prompts.
+        'plan': '5/hour',
     },
 }
 

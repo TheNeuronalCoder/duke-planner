@@ -618,6 +618,101 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
 
+  /assistant/plan/:
+    post:
+      tags: [Assistant]
+      operationId: generatePlan
+      summary: Draft a graduation plan with Duke AI
+      description: |
+        Drafts the semesters the account has left until graduation. Only terms
+        after the current one that the account has no semester for are planned.
+        Courses that can't be saved (unknown, already taken, over the credit cap)
+        are left out and listed in `warnings`, and `unsatisfied` lists what the
+        account would still miss with the plan. Prerequisites are not checked.
+        Nothing is saved; apply a draft with POST /student/semesters/. Limited
+        to 5 requests per hour per account.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                max_credits: {type: integer, minimum: 12, maximum: 18, default: 15}
+                include_summer: {type: boolean, default: false}
+                graduate_by:
+                  type: object
+                  description: The last term to plan; defaults to six years out.
+                  required: [term, year]
+                  properties:
+                    term: {type: string, enum: [spring, summer, fall, winter]}
+                    year: {type: integer}
+                preferences: {type: string, maxLength: 500}
+            example:
+              max_credits: 15
+              graduate_by: {term: spring, year: 2029}
+              preferences: Lighter fall semesters; interested in machine learning.
+      responses:
+        '200':
+          description: The draft plan.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [semesters, notes, warnings, unsatisfied]
+                properties:
+                  semesters:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        term: {type: string, enum: [Spring, Summer, Fall, Winter]}
+                        year: {type: integer}
+                        credits: {type: integer}
+                        courses:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              code: {type: string}
+                              title: {type: string}
+                              credits: {type: integer}
+                              fills:
+                                type: array
+                                description: The requirements Duke AI says the course counts toward.
+                                items: {type: string}
+                  notes: {type: string}
+                  warnings: {type: array, items: {type: string}}
+                  unsatisfied: {type: array, items: {type: string}}
+        '400':
+          description: The options are malformed, or there are no terms left to plan.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409':
+          description: The account isn't valid, so its requirements can't be checked.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IssuesError'}
+        '429':
+          description: The account is throttled, or the upstream Groq quota is exhausted.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Error'
+                  - $ref: '#/components/schemas/Detail'
+        '502':
+          description: Groq failed to draft a plan.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '503':
+          description: No Groq API key is configured.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+
 components:
   securitySchemes:
     bearerAuth:

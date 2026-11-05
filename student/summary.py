@@ -109,6 +109,20 @@ def _evaluate(curricula, taken):
     }
 
 
+def evaluate_with(account, courses):
+    """The account's programs and General Education evaluated as if its passed
+    classes and `courses` (Course objects, e.g. a draft plan) were all taken,
+    shaped like _evaluate's result. The account must be valid."""
+    curricula = list(account.programs.select_related('program').order_by('pk'))
+    taken = {}
+    for c in account.classes.filter(credits_earned=True).select_related('course'):
+        c.course.credits = c.credits
+        taken.setdefault(c.course.pk, c.course)
+    for course in courses:
+        taken.setdefault(course.pk, course)
+    return _evaluate(curricula, taken)
+
+
 def _mark(node, earlier, status):
     """Changes every `status` in `node` (an evaluation) that is satisfied there
     but not in `earlier` (the same evaluation counting fewer classes) to
