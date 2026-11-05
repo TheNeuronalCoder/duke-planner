@@ -1,4 +1,5 @@
-"""Catalog tools Duke AI can call instead of having courses stuffed into its prompt.
+"""Catalog and plan tools Duke AI can call instead of having courses and the
+student's plan stuffed into its prompt.
 
 TOOLS holds the schemas sent to Groq and run() executes a call, returning the
 JSON string sent back as the tool message. Results are kept small for Groq's
@@ -6,12 +7,18 @@ tokens-per-minute limit.
 """
 
 import json
+import logging
 import re
+from functools import partial
 
 from catalog.models import Course, Subject
 from catalog.utils import gened
 from catalog.utils.courses import course_json, lookup_courses, normalize_code, search_courses
 from catalog.utils.embeddings import semantic_search
+
+from . import context
+
+logger = logging.getLogger(__name__)
 
 MAX_RESULTS = 10
 MAX_DESCRIPTION = 800
@@ -61,6 +68,49 @@ TOOLS = [
                     'code': {'type': 'string', 'description': 'Course code, e.g. "CS 345".'},
                 },
                 'required': ['code'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'get_requirements',
+            'description': (
+                "The student's requirements by program: which are satisfied, in progress, "
+                'planned, unsatisfied or unverified, with the rules and course options '
+                'still missing for unsatisfied ones. Includes General Education.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'program': {
+                        'type': 'string',
+                        'description': 'Only this program, by name as in the plan overview '
+                                       '("Computer Science") or "General Education".',
+                    },
+                    'status': {
+                        'type': 'string',
+                        'enum': list(context.BUCKETS),
+                        'description': 'Only requirements with this status.',
+                    },
+                },
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'get_semesters',
+            'description': (
+                "The student's semesters, past, current and planned, with their "
+                'classes, status and credits.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'term': {'type': 'string', 'description': 'Only this term, e.g. "Fall".'},
+                    'year': {'type': 'string', 'description': 'Only this year, e.g. "2026".'},
+                },
             },
         },
     },
@@ -120,17 +170,30 @@ def get_course(code):
 
 
 HANDLERS = {'search_courses': search, 'get_course': get_course}
+# These take the student's context.Plan first.
+PLAN_HANDLERS = {'get_requirements': context.requirements, 'get_semesters': context.semesters}
 
 
-def run(name, arguments):
-    """Run the tool call `name` with JSON `arguments`; returns the result as JSON.
-    Bad calls return an error the model can read and correct."""
-    handler = HANDLERS.get(name)
+def run(name, arguments, plan):
+    """Run the tool call `name` with JSON `arguments` for `plan` (a
+    context.Plan); returns the result as JSON. Bad calls return an error the
+    model can read and correct."""
+    handler = partial(PLAN_HANDLERS[name], plan) if name in PLAN_HANDLERS else HANDLERS.get(name)
     if handler is None:
         return json.dumps({'error': f'Unknown tool {name}.'})
     try:
         args = json.loads(arguments or '{}')
+        # Every parameter is a string; the model sometimes sends null for ones it skips.
+        if not isinstance(args, dict):
+            raise TypeError('arguments must be an object')
+        args = {k: v for k, v in args.items() if v is not None}
+        if not all(isinstance(v, str) for v in args.values()):
+            raise TypeError('every argument must be a string')
         result = handler(**args)
     except (ValueError, TypeError) as e:
         result = {'error': f'Bad arguments for {name}: {e}'}
+    except Exception:
+        # A failed lookup (e.g. the embedding model or database) shouldn't fail the whole chat.
+        logger.exception('Duke AI tool %s failed', name)
+        result = {'error': f'{name} failed. Answer without it or try another search.'}
     return json.dumps(result, ensure_ascii=False)

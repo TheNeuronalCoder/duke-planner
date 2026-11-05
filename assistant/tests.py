@@ -12,9 +12,9 @@ from account.models import Account
 from catalog.models import Course, Program, Subject
 from student.models import Class, Curriculum, Semester
 
-from . import tools
-from .context import build_context
-from .views import MAX_ROUNDS
+from . import context, tools
+from .context import Plan, build_context
+from .views import MAX_ROUNDS, TIME_LIMIT
 
 
 def _completion(text=None, tool_calls=None):
@@ -76,7 +76,8 @@ class ChatTests(TestCase):
         self.assertEqual(r.json(), {'reply': 'Take CS 159 next.'})
         sent = self.groq.chat.completions.create.call_args.kwargs['messages']
         self.assertEqual(sent[0]['role'], 'system')
-        self.assertIn('Fall 2025 (3 cr): CS 149 Intro', sent[0]['content'])
+        self.assertIn('Program: Computer Science (B.S.)', sent[0]['content'])
+        self.assertNotIn('CS 149', sent[0]['content'])  # looked up with get_semesters
         self.assertEqual(sent[1:], [{'role': 'user', 'content': 'What next?'}])
 
     def test_runs_tool_calls(self):
@@ -108,14 +109,70 @@ class ChatTests(TestCase):
         )
         self.assertEqual(self.chat([{'role': 'user', 'content': 'hi'}]).status_code, 429)
 
+    def test_last_round_after_time_limit(self):
+        create = self.groq.chat.completions.create
+        loop = _completion(tool_calls=[_tool_call('t', 'search_courses', query='CS')])
+        create.side_effect = [loop, _completion('Done.')]
+        with mock.patch('assistant.views.time.monotonic', side_effect=[0, 0, TIME_LIMIT + 1]):
+            self.assertEqual(self.chat([{'role': 'user', 'content': 'hi'}]).json(), {'reply': 'Done.'})
+        self.assertEqual(create.call_count, 2)
+        self.assertEqual(create.call_args.kwargs['tool_choice'], 'none')
+
+    def test_api_error(self):
+        request = httpx.Request('POST', 'https://api.groq.com')
+        self.groq.chat.completions.create.side_effect = groq.APIConnectionError(request=request)
+        self.assertEqual(self.chat([{'role': 'user', 'content': 'hi'}]).status_code, 502)
+
+    def test_empty_reply(self):
+        self.groq.chat.completions.create.return_value = _completion('  ')
+        self.assertEqual(self.chat([{'role': 'user', 'content': 'hi'}]).status_code, 502)
+
     @override_settings(GROQ_API_KEY='')
     def test_not_configured(self):
         self.assertEqual(self.chat([{'role': 'user', 'content': 'hi'}]).status_code, 503)
 
-    def test_context_is_compact(self):
-        text = build_context(self.account)
-        self.assertIn('Program: Computer Science (B.S.)', text)
-        self.assertLessEqual(len(text), 4100)
+    def test_overview(self):
+        text = build_context(Plan(self.account))
+        self.assertIn('Total credits earned: 3. 1 semesters, Fall 2025 to Fall 2025.', text)
+        self.assertIn('Program: Computer Science (B.S.), overall satisfied', text)
+        self.assertNotIn('CS 149', text)
+
+    def plan_tool(self, name, **arguments):
+        return json.loads(tools.run(name, json.dumps(arguments), Plan(self.account)))
+
+    def test_get_semesters(self):
+        result = self.plan_tool('get_semesters')
+        self.assertEqual(result['semesters'][0]['courses'], ['CS 149 Intro'])
+        self.assertEqual(self.plan_tool('get_semesters', term='fall', year='2025'), result)
+        self.assertIn('error', self.plan_tool('get_semesters', year='2030'))
+
+    def test_get_requirements(self):
+        result = self.plan_tool('get_requirements', program='computer science')
+        self.assertEqual(result['programs'][0]['program'], 'Computer Science (B.S.)')
+        self.assertEqual(self.plan_tool('get_requirements', program='computer-science-bs'), result)
+        error = self.plan_tool('get_requirements', program='Art')['error']
+        self.assertIn('Computer Science (B.S.)', error)
+        self.assertIn('error', self.plan_tool('get_requirements', status='done'))
+
+    def test_get_requirements_with_account_issues(self):
+        issue = SimpleNamespace(message='Choose a program.')
+        with mock.patch('assistant.context.requirements_data', return_value=(None, [issue])):
+            self.assertIn('Choose a program.', self.plan_tool('get_requirements')['error'])
+
+    def test_plan_evaluated_once_per_chat(self):
+        create = self.groq.chat.completions.create
+        create.side_effect = [
+            _completion(tool_calls=[_tool_call('t1', 'get_requirements', status='unsatisfied'),
+                                    _tool_call('t2', 'get_requirements')]),
+            _completion('All done.'),
+        ]
+        with mock.patch('assistant.context.requirements_data',
+                        wraps=context.requirements_data) as evaluate:
+            r = self.chat([{'role': 'user', 'content': 'What do I need?'}])
+        self.assertEqual(r.json(), {'reply': 'All done.'})
+        self.assertEqual(evaluate.call_count, 1)
+        sent = create.call_args.kwargs['messages']
+        self.assertEqual(json.loads(sent[-1]['content'])['programs'][0]['status'], 'satisfied')
 
 
 class ToolTests(TestCase):
@@ -131,7 +188,7 @@ class ToolTests(TestCase):
                               description='Team projects in software.', prerequisites='CS 240')
 
     def call(self, name, **arguments):
-        return json.loads(tools.run(name, json.dumps(arguments)))
+        return json.loads(tools.run(name, json.dumps(arguments), None))
 
     def codes(self, result):
         return [c['code'] for c in result['results']]
@@ -169,6 +226,17 @@ class ToolTests(TestCase):
         self.assertIn('error', self.call('get_course', code='CS 999'))
 
     def test_bad_calls(self):
-        self.assertIn('error', json.loads(tools.run('drop_tables', '{}')))
-        self.assertIn('error', json.loads(tools.run('get_course', 'not json')))
-        self.assertIn('error', json.loads(tools.run('get_course', '{"nope": 1}')))
+        self.assertIn('error', json.loads(tools.run('drop_tables', '{}', None)))
+        self.assertIn('error', json.loads(tools.run('get_course', 'not json', None)))
+        self.assertIn('error', json.loads(tools.run('get_course', '{"nope": 1}', None)))
+        self.assertIn('error', self.call('get_course', code=345))
+        self.assertIn('error', self.call('search_courses', query=5))
+        self.assertIn('error', json.loads(tools.run('get_course', '["CS 345"]', None)))
+
+    def test_skips_null_arguments(self):
+        self.assertEqual(self.codes(self.call('search_courses', query='cs345', gen_ed=None)), ['CS 345'])
+
+    def test_failed_tool_returns_error(self):
+        with mock.patch('assistant.tools.semantic_search', side_effect=RuntimeError('no model')), \
+                self.assertLogs('assistant.tools', 'ERROR'):
+            self.assertIn('error', self.call('search_courses', query='team projects'))
