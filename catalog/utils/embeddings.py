@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+import numpy as np
 from django.db import connection, transaction
 from pgvector.django import CosineDistance
 
@@ -13,10 +14,19 @@ QUERY_INSTRUCTION = 'Represent this sentence for searching relevant passages: '
 
 @lru_cache(maxsize=1)
 def _model():
-    # Imported lazily: loading torch is slow and only needed when there's work to do.
-    from sentence_transformers import SentenceTransformer
+    # fastembed runs the model on ONNX Runtime, which needs far less memory than
+    # torch. Imported lazily: loading the model is slow and only needed when
+    # there's work to do.
+    from fastembed import TextEmbedding
 
-    return SentenceTransformer(MODEL_NAME)
+    return TextEmbedding(MODEL_NAME)
+
+
+def _encode(texts):
+    """Unit-length vectors for `texts`, so cosine distance (the HNSW index
+    opclass) behaves as expected."""
+    vectors = np.array(list(_model().embed(texts, batch_size=BATCH_SIZE)))
+    return vectors / np.linalg.norm(vectors, axis=1, keepdims=True)
 
 
 def embed_missing_courses():
@@ -25,11 +35,9 @@ def embed_missing_courses():
     if not courses:
         return 0
 
-    model = _model()
     for start in range(0, len(courses), BATCH_SIZE):
         batch = courses[start:start + BATCH_SIZE]
-        # Normalized so cosine distance (the HNSW index opclass) behaves as expected.
-        vectors = model.encode([c.embedding_text() for c in batch], normalize_embeddings=True)
+        vectors = _encode([c.embedding_text() for c in batch])
         for course, vector in zip(batch, vectors):
             course.embedding = vector.tolist()
         Course.objects.bulk_update(batch, ['embedding'])
@@ -37,7 +45,7 @@ def embed_missing_courses():
 
 
 def embed_query(text):
-    return _model().encode(QUERY_INSTRUCTION + text, normalize_embeddings=True).tolist()
+    return _encode([QUERY_INSTRUCTION + text])[0].tolist()
 
 
 def semantic_search(query, courses, limit):
