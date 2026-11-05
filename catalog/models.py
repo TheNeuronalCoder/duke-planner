@@ -1,4 +1,5 @@
 from django.db import models
+from pgvector.django import HnswIndex, VectorField
 
 
 class Subject(models.Model):
@@ -26,16 +27,33 @@ class Course(models.Model):
     description = models.TextField(null=True, blank=True)
     prerequisites = models.TextField(null=True, blank=True)
     corequisites = models.TextField(null=True, blank=True)
+    # For semantic search; null until the course has been embedded.
+    embedding = VectorField(dimensions=384, null=True, blank=True)
 
     class Meta:
         ordering = ['prefix', 'number']
         constraints = [
             models.UniqueConstraint(fields=['prefix', 'number'], name='unique_course_code'),
         ]
+        indexes = [
+            HnswIndex(
+                name='course_embedding_hnsw',
+                fields=['embedding'],
+                m=16,
+                ef_construction=64,
+                opclasses=['vector_cosine_ops'],
+            ),
+        ]
 
     @property
     def code(self):
         return f'{self.prefix_id} {self.number}'
+
+    def embedding_text(self):
+        """The text that Course.embedding is computed from."""
+        if self.description:
+            return f'{self}\n{self.description}'
+        return str(self)
 
     def __str__(self):
         return f'{self.code}: {self.title}'

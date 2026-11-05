@@ -1,0 +1,1242 @@
+openapi: 3.1.0
+info:
+  title: Duke Planner API
+  version: 1.0.0
+  description: |
+    AI-powered degree planner for JMU students: imports transcripts, live degree audits, semester planning, and a helpful chat assistant.
+
+servers:
+  - name: Production
+    url: https://api.menelik.xyz/dukeplanner
+    description: Production environment deployed on AWS EC2 using Dokploy
+
+tags:
+  - name: Catalog
+    description: Public course and program lookup.
+  - name: Student
+    description: The signed-in student's programs, semesters, classes and requirement status.
+  - name: Auth
+    description: One-time-code sign-in and JWT management.
+  - name: Account
+    description: Onboarding and deleting the signed-in account.
+  - name: Assistant
+    description: Duke AI chat about the student's plan.
+
+security:
+  - bearerAuth: []
+
+paths:
+  /catalog/courses:
+    get:
+      tags: [Catalog]
+      operationId: getCourses
+      summary: Look up courses by code
+      description: |
+        Returns an object keyed by each requested code exactly as given. Codes
+        that don't match a course are omitted.
+      security: []
+      parameters:
+        - name: codes
+          in: query
+          description: Course codes, comma-separated and/or repeated.
+          schema:
+            type: array
+            items: {type: string}
+          style: form
+          explode: false
+          example: [CS 149, MATH 235]
+      responses:
+        '200':
+          description: The matching courses.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {$ref: '#/components/schemas/CourseDetail'}
+
+  /catalog/search/course:
+    get:
+      tags: [Catalog]
+      operationId: searchCourses
+      summary: Search courses
+      description: |
+        Matches course codes ("COB 191", "cob19", "COB") and titles; every word of
+        a title search must appear in the title. Ranked exact code, then code
+        prefix, then title match.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/SearchQuery'
+        - name: subject
+          in: query
+          description: Limit to these subject prefixes, comma-separated and/or repeated.
+          schema:
+            type: array
+            items: {type: string}
+          style: form
+          explode: false
+          example: [CS, MATH]
+        - $ref: '#/components/parameters/SearchLimit'
+      responses:
+        '200':
+          description: The matching courses.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [results]
+                properties:
+                  results:
+                    type: array
+                    items: {$ref: '#/components/schemas/Course'}
+        '400':
+          $ref: '#/components/responses/ValidationError'
+
+  /catalog/search/program:
+    get:
+      tags: [Catalog]
+      operationId: searchPrograms
+      summary: Search programs
+      description: |
+        Every word of `q` must appear in the program's name or keywords. Ranked
+        name prefix, then name, then keyword-only matches.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/SearchQuery'
+        - name: level
+          in: query
+          schema: {$ref: '#/components/schemas/ProgramLevel'}
+        - name: type
+          in: query
+          description: Limit to these program types (e.g. `B.S.`, `minor`), comma-separated and/or repeated.
+          schema:
+            type: array
+            items: {type: string}
+          style: form
+          explode: false
+        - $ref: '#/components/parameters/SearchLimit'
+      responses:
+        '200':
+          description: The matching programs.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [results]
+                properties:
+                  results:
+                    type: array
+                    items: {$ref: '#/components/schemas/ProgramSearchResult'}
+        '400':
+          $ref: '#/components/responses/ValidationError'
+
+  /student/courses/:
+    post:
+      tags: [Student]
+      operationId: addCourses
+      summary: Add classes
+      description: |
+        Adds classes to existing semesters of the account (use
+        `POST /student/semesters/` for a new semester). A course can't be listed
+        twice in a semester. Nothing is saved if any item is invalid.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              minItems: 1
+              items: {$ref: '#/components/schemas/AddClass'}
+            example:
+              - {course: CS 149, semester: 3}
+              - {course: IND 499, semester: 3, credits: 2, credits_earned: false}
+      responses:
+        '201':
+          description: Classes added; `ids` are the new class ids in request order.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Changed'}
+        '400': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {$ref: '#/components/responses/WouldInvalidate'}
+    patch:
+      tags: [Student]
+      operationId: updateCourses
+      summary: Update classes
+      description: |
+        Each item has the class `id` and any fields to change. Changing `course`
+        without `credits` resets the credits to the new course's. Semesters left
+        empty by a move are deleted. Nothing is saved if any item is invalid.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              minItems: 1
+              items: {$ref: '#/components/schemas/UpdateClass'}
+            example:
+              - {id: 12, semester: 4}
+              - {id: 13, credits: 2, credits_earned: false}
+      responses:
+        '200':
+          description: Classes updated.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Changed'}
+        '400': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {$ref: '#/components/responses/WouldInvalidate'}
+    delete:
+      tags: [Student]
+      operationId: deleteCourses
+      summary: Delete classes
+      description: Deletes classes by id, along with any semesters left empty.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/IdList'}
+            example: [1, 2, 3]
+      responses:
+        '200': {$ref: '#/components/responses/Deleted'}
+        '400': {$ref: '#/components/responses/BadIdList'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/WouldInvalidate'}
+
+  /student/programs/:
+    post:
+      tags: [Student]
+      operationId: addPrograms
+      summary: Add programs
+      description: |
+        Adds programs by slug, each with an optional track that must belong to
+        it. A program the account already has can't be added again. Nothing is
+        saved if any item is invalid.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              minItems: 1
+              items: {$ref: '#/components/schemas/AddProgram'}
+            example:
+              - {program: computer-science-bs}
+              - {program: mathematics-minor, track: 12}
+      responses:
+        '201':
+          description: Programs added; `ids` are the added program slugs.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Changed'}
+        '400': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {$ref: '#/components/responses/WouldInvalidate'}
+    delete:
+      tags: [Student]
+      operationId: deletePrograms
+      summary: Remove programs
+      description: Removes programs from the account by slug.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              minItems: 1
+              items: {type: string}
+            example: [computer-science-bs]
+      responses:
+        '200': {$ref: '#/components/responses/Deleted'}
+        '400': {$ref: '#/components/responses/BadIdList'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/WouldInvalidate'}
+
+  /student/semesters/:
+    post:
+      tags: [Student]
+      operationId: addSemesters
+      summary: Add semesters
+      description: |
+        Adds semesters with their classes, since a semester can't be empty. A
+        term/year the account already has can't be added again, and a course
+        can't be listed twice in a semester. Nothing is saved if any item is
+        invalid.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              minItems: 1
+              items: {$ref: '#/components/schemas/SemesterInput'}
+            example:
+              - term: fall
+                year: 2025
+                courses: [CS 149, {course: MATH 235, credits_earned: false}]
+              - term: spring
+                year: 2026
+                courses: [{course: IND 499, credits: 2}]
+      responses:
+        '201':
+          description: Semesters added; `ids` are the new semester ids in request order.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Changed'}
+        '400': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {$ref: '#/components/responses/WouldInvalidate'}
+    delete:
+      tags: [Student]
+      operationId: deleteSemesters
+      summary: Delete semesters
+      description: Deletes semesters by id, along with the classes in them.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/IdList'}
+            example: [1, 2]
+      responses:
+        '200': {$ref: '#/components/responses/Deleted'}
+        '400': {$ref: '#/components/responses/BadIdList'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/WouldInvalidate'}
+
+  /student/requirements/:
+    get:
+      tags: [Student]
+      operationId: getRequirements
+      summary: Get requirement status and classes
+      description: |
+        Checks the account's programs (with their tracks, if chosen) against its
+        passed classes. Each program's requirements are bucketed by status:
+        `satisfied` by passed classes of completed semesters (or classes not
+        placed in a semester), `in_progress` if classes of the current semester
+        would satisfy them once passed, `planned` if classes of later semesters
+        would, otherwise `unsatisfied` or `unverified`.
+
+        `classes` lists the account's semesters chronologically with their
+        classes; class `id`s are the ones used by `PATCH` and `DELETE
+        /student/courses/`.
+      responses:
+        '200':
+          description: The account's requirement status and classes.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RequirementsResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409':
+          description: The account isn't set up or is invalid.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/IssuesError'
+                  - type: object
+                    required: [classes]
+                    properties:
+                      classes: {$ref: '#/components/schemas/Classes'}
+
+
+  /auth/request-code/:
+    post:
+      tags: [Auth]
+      operationId: requestCode
+      summary: Email a sign-in code
+      description: |
+        Emails a 6-digit one-time code to `<eid>@dukes.jmu.edu`. Requesting a new
+        code replaces the previous one. Limited to one request per minute per eID.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [eid]
+              properties:
+                eid:
+                  $ref: '#/components/schemas/Eid'
+            example: {eid: eyasumx}
+      responses:
+        '200':
+          description: Code sent.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [detail, expires_in]
+                properties:
+                  detail:
+                    type: string
+                    example: Verification code sent.
+                  expires_in:
+                    type: integer
+                    description: Seconds until the code expires.
+        '400':
+          description: "`eid` is missing or isn't lowercase letters."
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '429':
+          description: A code was sent to this eID less than a minute ago.
+          headers:
+            Retry-After:
+              description: Seconds until another code can be requested.
+              schema: {type: integer}
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Error'
+                  - type: object
+                    required: [retry_after]
+                    properties:
+                      retry_after:
+                        type: integer
+                        description: Seconds until another code can be requested.
+
+  /auth/verify-code/:
+    post:
+      tags: [Auth]
+      operationId: verifyCode
+      summary: Exchange a code for tokens
+      description: |
+        Returns JWTs if the code is valid, creating the account on first sign-in
+        (its names are filled in by `POST /account/setup/`). A code is single use,
+        expires, and is invalidated after 5 wrong guesses.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [eid, code]
+              properties:
+                eid:
+                  $ref: '#/components/schemas/Eid'
+                code:
+                  type: string
+                  pattern: '^\d{6}$'
+            example: {eid: eyasumx, code: '123456'}
+      responses:
+        '200':
+          description: Signed in.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TokenPair'}
+        '400':
+          description: The eID or code is malformed, or the code is wrong, expired or used up.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              examples:
+                invalid:
+                  value: {error: Invalid or expired code.}
+
+  /auth/refresh/:
+    post:
+      tags: [Auth]
+      operationId: refreshToken
+      summary: Refresh the access token
+      description: Returns a new access token and a new (rotated) refresh token.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RefreshRequest'}
+      responses:
+        '200':
+          description: New tokens.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TokenPair'}
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/logout/:
+    post:
+      tags: [Auth]
+      operationId: logout
+      summary: Sign out
+      description: Blacklists the refresh token so it can't be used again.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RefreshRequest'}
+      responses:
+        '200':
+          description: Signed out.
+          content:
+            application/json:
+              schema: {type: object, maxProperties: 0}
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /account/setup/:
+    post:
+      tags: [Account]
+      operationId: setupAccount
+      summary: Set up the account
+      description: |
+        Replaces the signed-in account's names, programs, semesters and classes,
+        then validates the account. On ERROR-level issues nothing is saved and
+        they're returned with a 400; otherwise any warnings and info are returned
+        with the success.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SetupRequest'}
+            example:
+              first_name: Menelik
+              last_name: Eyasu
+              programs: [computer-science-bs, mathematics-minor]
+              semesters:
+                - term: fall
+                  year: 2025
+                  courses:
+                    - {course: CS 149, credits: 3, credits_earned: true}
+                    - {course: MATH 235, credits: 4, credits_earned: false}
+                    - {course: IND 499, credits: 2}
+                - term: spring
+                  year: 2026
+                  courses: [CS 159, CS 227, MATH 236]
+      responses:
+        '200':
+          description: Account set up.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DetailWithIssues'}
+        '400':
+          description: |
+            The body is malformed (DRF validation errors), or the account would be
+            invalid (`error` with the ERROR-level `issues`).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/IssuesError'
+                  - $ref: '#/components/schemas/ValidationErrors'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /account/delete/:
+    delete:
+      tags: [Account]
+      operationId: deleteAccount
+      summary: Delete the account
+      description: |
+        Permanently deletes the signed-in account with its programs, semesters
+        and classes, and blacklists its outstanding refresh tokens.
+      responses:
+        '200':
+          description: Account deleted.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Detail'}
+              example: {detail: Account deleted.}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /assistant/chat/:
+    post:
+      tags: [Assistant]
+      operationId: chat
+      summary: Chat with Duke AI
+      description: |
+        Answers the last message of a chat with Duke AI, which sees a summary of
+        the account's plan and requirement status. The client keeps the history
+        and sends it each time; only the last 10 messages are used. Limited to
+        20 requests per minute per account.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [messages]
+              properties:
+                messages:
+                  type: array
+                  minItems: 1
+                  description: The chat history, ending with a user message.
+                  items: {$ref: '#/components/schemas/ChatMessage'}
+            example:
+              messages:
+                - {role: user, content: What do I still need for my major?}
+      responses:
+        '200':
+          description: Duke AI's reply, in plain text.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [reply]
+                properties:
+                  reply: {type: string}
+        '400':
+          description: "`messages` is malformed, too long, or doesn't end with a user message."
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429':
+          description: |
+            The account is throttled (`detail`, with a `Retry-After` header), or
+            the upstream Groq quota is exhausted (`error`).
+          headers:
+            Retry-After:
+              description: Seconds to wait (account throttling only).
+              schema: {type: integer}
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Error'
+                  - $ref: '#/components/schemas/Detail'
+        '502':
+          description: Groq failed to answer.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '503':
+          description: No Groq API key is configured.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    SearchQuery:
+      name: q
+      in: query
+      required: true
+      description: Search text; extra whitespace is collapsed.
+      schema: {type: string, minLength: 1}
+    SearchLimit:
+      name: limit
+      in: query
+      description: Maximum results; values above 100 are capped at 100.
+      schema: {type: integer, minimum: 1, default: 20}
+
+  responses:
+    Unauthorized:
+      description: Missing, invalid or expired token.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [detail]
+            properties:
+              detail: {type: string}
+              code: {type: string, example: token_not_valid}
+              messages:
+                type: array
+                items: {type: object}
+    ValidationError:
+      description: The request failed validation.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ValidationErrors'}
+    WouldInvalidate:
+      description: The change would make the account invalid; nothing was saved.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/IssuesError'}
+          example:
+            error: This change would make the account invalid.
+            issues:
+              - {code: no_semester, message: Add at least one semester., severity: error}
+    Deleted:
+      description: Deleted.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/DetailWithIssues'}
+    BadIdList:
+      description: The body isn't a non-empty list of ids.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+          example: {error: Body must be a non-empty list of ids.}
+    NotFound:
+      description: Some ids weren't found in the account; nothing was deleted.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Error'
+              - type: object
+                required: [missing]
+                properties:
+                  missing:
+                    type: array
+                    items:
+                      oneOf: [{type: integer}, {type: string}]
+
+  schemas:
+    Eid:
+      type: string
+      pattern: '^[a-z]+$'
+      description: JMU eID (lowercase letters only).
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: {type: string}
+
+    Detail:
+      type: object
+      required: [detail]
+      properties:
+        detail: {type: string}
+
+    ValidationErrors:
+      description: Django REST Framework validation errors.
+      oneOf:
+        - type: object
+          additionalProperties: true
+          example: {first_name: [This field is required.]}
+        - type: array
+          description: One error object per list item (empty for valid items).
+          items: {type: object, additionalProperties: true}
+
+    Issue:
+      type: object
+      description: An account validation issue. ERROR-level issues make the account invalid.
+      required: [code, message, severity]
+      properties:
+        code:
+          type: string
+          description: Machine-readable issue code.
+          examples:
+            - no_degree
+            - orphan_secondary_program
+            - duplicate_major
+            - major_minor_same_area
+            - excluded_combination
+            - missing_required_program
+            - track_wrong_program
+            - track_not_chosen
+            - track_not_open
+            - double_degree
+            - double_major
+            - mixed_levels
+            - no_semester
+            - semester_year_out_of_range
+            - empty_semester
+            - no_classes
+            - class_without_semester
+            - class_semester_other_account
+            - class_credits_out_of_range
+            - duplicate_class_in_semester
+        message: {type: string}
+        severity:
+          type: string
+          enum: [error, warning, info]
+
+    IssuesError:
+      type: object
+      required: [error, issues]
+      properties:
+        error: {type: string}
+        issues:
+          type: array
+          items: {$ref: '#/components/schemas/Issue'}
+
+    DetailWithIssues:
+      type: object
+      required: [detail, issues]
+      properties:
+        detail: {type: string}
+        issues:
+          type: array
+          items: {$ref: '#/components/schemas/Issue'}
+
+    Changed:
+      allOf:
+        - $ref: '#/components/schemas/DetailWithIssues'
+        - type: object
+          required: [ids]
+          properties:
+            ids:
+              type: array
+              items:
+                oneOf: [{type: integer}, {type: string}]
+
+    IdList:
+      type: array
+      minItems: 1
+      items: {type: integer}
+
+    TokenPair:
+      type: object
+      required: [access, refresh]
+      properties:
+        access: {type: string, description: Access JWT (60 minutes).}
+        refresh: {type: string, description: Refresh JWT (30 days).}
+
+    RefreshRequest:
+      type: object
+      required: [refresh]
+      properties:
+        refresh: {type: string}
+
+    CourseCode:
+      type: string
+      description: A catalog course code, case-insensitive, e.g. `CS 149`.
+      example: CS 149
+
+    Credits:
+      type: integer
+      minimum: 1
+      maximum: 9
+      description: |
+        Credits the class was taken for. Defaults to the course's credits (its
+        minimum for variable-credit courses); needn't match the catalog.
+
+    ClassInput:
+      type: object
+      required: [course]
+      properties:
+        course: {$ref: '#/components/schemas/CourseCode'}
+        credits: {$ref: '#/components/schemas/Credits'}
+        credits_earned:
+          type: boolean
+          default: true
+          description: False if the class was failed.
+
+    ClassEntry:
+      description: A class, or a bare course code for one with the defaults.
+      oneOf:
+        - $ref: '#/components/schemas/CourseCode'
+        - $ref: '#/components/schemas/ClassInput'
+
+    Term:
+      type: string
+      enum: [spring, summer, fall, winter]
+
+    SemesterInput:
+      type: object
+      required: [term, year, courses]
+      properties:
+        term: {$ref: '#/components/schemas/Term'}
+        year: {type: integer, minimum: 0}
+        courses:
+          type: array
+          minItems: 1
+          items: {$ref: '#/components/schemas/ClassEntry'}
+
+    SetupRequest:
+      type: object
+      required: [first_name, last_name, programs, semesters]
+      properties:
+        first_name: {type: string, maxLength: 150}
+        last_name: {type: string, maxLength: 150}
+        programs:
+          type: array
+          uniqueItems: true
+          description: Program slugs.
+          items: {type: string}
+        semesters:
+          type: array
+          description: Each term/year may appear only once.
+          items: {$ref: '#/components/schemas/SemesterInput'}
+
+    AddClass:
+      allOf:
+        - $ref: '#/components/schemas/ClassInput'
+        - type: object
+          required: [semester]
+          properties:
+            semester:
+              type: integer
+              description: Id of one of the account's semesters.
+
+    UpdateClass:
+      type: object
+      required: [id]
+      properties:
+        id: {type: integer, description: Id of one of the account's classes.}
+        course: {$ref: '#/components/schemas/CourseCode'}
+        semester: {type: integer, description: Id of one of the account's semesters.}
+        credits: {$ref: '#/components/schemas/Credits'}
+        credits_earned: {type: boolean}
+
+    AddProgram:
+      type: object
+      required: [program]
+      properties:
+        program: {type: string, description: Program slug.}
+        track:
+          type: [integer, 'null']
+          description: Id of a track of this program.
+
+    ChatMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          enum: [user, assistant]
+        content:
+          type: string
+          minLength: 1
+          maxLength: 2000
+
+    Course:
+      type: object
+      required: [code, title, credits, min_credits, max_credits]
+      properties:
+        code: {type: string, example: CS 149}
+        title: {type: string}
+        credits:
+          type: integer
+          description: The course's credits, or its minimum for variable-credit courses.
+        min_credits: {type: integer}
+        max_credits: {type: integer}
+
+    CourseDetail:
+      allOf:
+        - $ref: '#/components/schemas/Course'
+        - type: object
+          required: [description, prerequisites, corequisites]
+          properties:
+            description: {type: [string, 'null']}
+            prerequisites: {type: [string, 'null']}
+            corequisites: {type: [string, 'null']}
+
+    ProgramLevel:
+      type: string
+      enum: [undergraduate, graduate]
+
+    Track:
+      type: object
+      required: [id, name]
+      properties:
+        id: {type: integer}
+        name: {type: string}
+
+    ProgramSearchResult:
+      type: object
+      required: [slug, name, level, type, url, tracks]
+      properties:
+        slug: {type: string, example: computer-science-bs}
+        name: {type: string}
+        level: {$ref: '#/components/schemas/ProgramLevel'}
+        type: {type: string, description: 'Degree/credential type, e.g. `B.S.`, `minor`.'}
+        url: {type: string, format: uri}
+        tracks:
+          type: array
+          items: {$ref: '#/components/schemas/Track'}
+
+    Status:
+      type: string
+      enum: [satisfied, in progress, planned, unsatisfied, unverified]
+
+    ClassCourse:
+      allOf:
+        - $ref: '#/components/schemas/CourseDetail'
+        - type: object
+          required: [id, official_credits, credits_earned]
+          properties:
+            id: {type: integer, description: The class id.}
+            credits:
+              type: integer
+              description: The credits the student took the class for.
+            official_credits:
+              description: The catalog's credits, or `[min, max]` for variable-credit courses.
+              oneOf:
+                - type: integer
+                - type: array
+                  items: {type: integer}
+                  minItems: 2
+                  maxItems: 2
+            credits_earned:
+              type: boolean
+              description: False if the class was failed.
+
+    Semester:
+      type: object
+      required: [id, term, year, status, credits_attempted, credits_earned, courses]
+      properties:
+        id: {type: integer}
+        term:
+          type: string
+          enum: [Spring, Summer, Fall, Winter]
+        year: {type: integer}
+        status:
+          type: string
+          enum: [completed, in progress, planned]
+          description: Relative to the server's current semester.
+        credits_attempted: {type: integer}
+        credits_earned: {type: integer, description: Credits of the classes that were passed.}
+        courses:
+          type: array
+          items: {$ref: '#/components/schemas/ClassCourse'}
+
+    Classes:
+      type: object
+      required: [semesters, unassigned]
+      properties:
+        semesters:
+          type: array
+          items: {$ref: '#/components/schemas/Semester'}
+        unassigned:
+          type: array
+          description: Classes not placed in a semester.
+          items: {$ref: '#/components/schemas/ClassCourse'}
+
+    CourseFilter:
+      type: object
+      description: A rule matching a set of courses, e.g. ACTG 500-699.
+      required: [subject, number_min, number_max, course, exclude]
+      properties:
+        subject: {type: [string, 'null']}
+        number_min: {type: [integer, 'null']}
+        number_max: {type: [integer, 'null']}
+        course: {type: [string, 'null']}
+        exclude: {type: boolean, description: True if matches are excluded.}
+
+    RequirementGroup:
+      type: object
+      description: |
+        A node in a requirement's rule tree. `all` needs every child and listed
+        course; `choose` needs `min_count` options and/or `min_credits` credits;
+        `placeholder` stands for something checked elsewhere (General Education,
+        a B.A./B.S. requirement, University electives, other sections) or is
+        `unverified`; `note` is informational and has a null status.
+      required: [id, kind, text, condition, needs_review, min_count, max_count, min_credits, max_credits, status, children]
+      properties:
+        id: {type: integer}
+        kind:
+          type: string
+          enum: [all, choose, placeholder, note]
+        text: {type: [string, 'null']}
+        condition: {type: [string, 'null']}
+        needs_review: {type: boolean}
+        min_count: {type: [integer, 'null']}
+        max_count: {type: [integer, 'null']}
+        min_credits: {type: [integer, 'null']}
+        max_credits: {type: [integer, 'null']}
+        status:
+          oneOf:
+            - $ref: '#/components/schemas/Status'
+            - type: 'null'
+        children:
+          type: array
+          items: {$ref: '#/components/schemas/RequirementGroup'}
+        satisfied_by:
+          type: array
+          description: Codes of the courses counted toward this group (absent for notes).
+          items: {type: string}
+        courses:
+          type: array
+          description: Courses listed in this group (`all` and `choose` groups).
+          items:
+            allOf:
+              - $ref: '#/components/schemas/CourseDetail'
+              - type: object
+                required: [taken]
+                properties:
+                  taken: {type: boolean}
+        filters:
+          type: array
+          description: Present when the group matches courses by rule.
+          items: {$ref: '#/components/schemas/CourseFilter'}
+        general_education:
+          description: Placeholders for General Education; `true` for all of it, or a cluster id.
+          oneOf: [{type: boolean}, {type: string}]
+        degree_requirement:
+          type: string
+          description: Placeholders for a B.A./B.S. requirement; its id.
+        university_electives:
+          type: boolean
+          description: Placeholders for University electives.
+        credits_earned:
+          type: integer
+          description: University electives placeholders only.
+        references_sections:
+          type: boolean
+          description: Placeholders standing for the program's other sections.
+
+    ProgramRequirement:
+      type: object
+      required: [id, title, subsection, cluster, track, credits_min, credits_max, status, rules]
+      properties:
+        id: {type: integer}
+        title: {type: string}
+        subsection: {type: [string, 'null']}
+        cluster: {type: [string, 'null']}
+        track:
+          oneOf:
+            - $ref: '#/components/schemas/Track'
+            - type: 'null'
+          description: Set when the requirement only applies to one track.
+        credits_min: {type: [integer, 'null']}
+        credits_max: {type: [integer, 'null']}
+        status: {$ref: '#/components/schemas/Status'}
+        rules: {$ref: '#/components/schemas/RequirementGroup'}
+
+    DegreeRequirement:
+      type: object
+      description: A B.A./B.S. degree requirement (philosophy, foreign language, ...).
+      required: [id, name, degree, min_credits, min_count, notes, status, credits_earned, satisfied_by]
+      properties:
+        id: {type: string, example: philosophy}
+        name: {type: string}
+        degree: {type: string, example: B.A.}
+        min_credits: {type: [integer, 'null']}
+        min_count: {type: [integer, 'null']}
+        notes:
+          type: array
+          items: {type: string}
+        status: {$ref: '#/components/schemas/Status'}
+        credits_earned: {type: integer}
+        satisfied_by:
+          type: array
+          items: {type: string}
+
+    ProgramEvaluation:
+      type: object
+      required: [program, track, status, satisfied, in_progress, planned, unsatisfied, unverified, degree_requirements, university_electives]
+      properties:
+        program:
+          type: object
+          required: [slug, name, type, url, requirements_pdf_url]
+          properties:
+            slug: {type: string}
+            name: {type: string}
+            type: {type: string}
+            url: {type: string, format: uri}
+            requirements_pdf_url: {type: string, format: uri}
+        track:
+          type: [integer, 'null']
+          description: The chosen track's id.
+        status: {$ref: '#/components/schemas/Status'}
+        satisfied: {$ref: '#/components/schemas/ProgramRequirements'}
+        in_progress: {$ref: '#/components/schemas/ProgramRequirements'}
+        planned: {$ref: '#/components/schemas/ProgramRequirements'}
+        unsatisfied: {$ref: '#/components/schemas/ProgramRequirements'}
+        unverified: {$ref: '#/components/schemas/ProgramRequirements'}
+        degree_requirements:
+          description: Present (non-null) for B.A./B.S. programs.
+          oneOf:
+            - type: array
+              items: {$ref: '#/components/schemas/DegreeRequirement'}
+            - type: 'null'
+        university_electives:
+          description: Present (non-null) for programs with a University electives requirement.
+          oneOf:
+            - type: object
+              required: [credits_earned, satisfied_by]
+              properties:
+                credits_earned: {type: integer}
+                satisfied_by:
+                  type: array
+                  items: {type: string}
+            - type: 'null'
+
+    ProgramRequirements:
+      type: array
+      items: {$ref: '#/components/schemas/ProgramRequirement'}
+
+    GenEdArea:
+      type: object
+      required: [code, name, choose, notes, status, satisfied_by, courses]
+      properties:
+        code: {type: string}
+        name: {type: string}
+        choose: {type: integer, description: Number of courses needed.}
+        notes:
+          type: array
+          items: {type: string}
+        status: {$ref: '#/components/schemas/Status'}
+        satisfied_by:
+          type: array
+          items: {type: string}
+        courses:
+          type: array
+          items:
+            type: object
+            required: [code, title, taken]
+            properties:
+              code: {type: string}
+              title: {type: string}
+              taken: {type: boolean}
+              note: {type: string}
+
+    GenEdCluster:
+      type: object
+      required: [id, name, notes, status, areas]
+      properties:
+        id: {type: string, example: C1}
+        name: {type: string}
+        notes:
+          type: array
+          items: {type: string}
+        status: {$ref: '#/components/schemas/Status'}
+        areas:
+          type: array
+          items: {$ref: '#/components/schemas/GenEdArea'}
+
+    GeneralEducation:
+      type: object
+      required: [name, catalog_year, source, total_credits, credits_earned, status, satisfied_by, clusters]
+      properties:
+        name: {type: string}
+        catalog_year: {type: string, example: 2026-2027}
+        source: {type: string, format: uri}
+        total_credits: {type: integer}
+        credits_earned: {type: integer}
+        status: {$ref: '#/components/schemas/Status'}
+        satisfied_by:
+          type: array
+          items: {type: string}
+        clusters:
+          type: array
+          items: {$ref: '#/components/schemas/GenEdCluster'}
+
+    RequirementsResponse:
+      type: object
+      required: [programs, courses, general_education, shared_courses, classes]
+      properties:
+        programs:
+          type: array
+          description: One entry per program, in the order they were added.
+          items: {$ref: '#/components/schemas/ProgramEvaluation'}
+        courses:
+          type: array
+          description: The passed courses counted toward requirements, each once.
+          items: {$ref: '#/components/schemas/Course'}
+        general_education:
+          description: Present (non-null) when any program requires General Education.
+          oneOf:
+            - $ref: '#/components/schemas/GeneralEducation'
+            - type: 'null'
+        shared_courses:
+          type: object
+          description: Course codes counted by more than one program's own requirements, mapped to those programs' slugs.
+          additionalProperties:
+            type: array
+            items: {type: string}
+        classes: {$ref: '#/components/schemas/Classes'}

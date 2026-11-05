@@ -155,6 +155,20 @@ DATABASES = {
     }
 }
 
+# Locally, reach the production Postgres through an SSH tunnel to the server
+if os.getenv('SSH_TUNNEL_HOST'):
+    from .ssh_tunnel import open_tunnel
+
+    DATABASES['default']['HOST'], DATABASES['default']['PORT'] = open_tunnel(
+        ssh_host=os.getenv('SSH_TUNNEL_HOST'),
+        ssh_port=int(os.getenv('SSH_TUNNEL_PORT', '22')),
+        ssh_user=os.getenv('SSH_TUNNEL_USER', 'root'),
+        remote_host=os.getenv('SSH_TUNNEL_DB_HOST', DATABASES['default']['HOST']),
+        remote_port=int(os.getenv('SSH_TUNNEL_DB_PORT', DATABASES['default']['PORT'])),
+        local_port=int(os.getenv('SSH_TUNNEL_LOCAL_PORT', '6543')),
+        key_file=os.getenv('SSH_TUNNEL_KEY_FILE'),
+    )
+
 
 # Password validation
 # https://docs.djangoproject.com/en/4.2/ref/settings/#auth-password-validators

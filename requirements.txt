@@ -8,3 +8,5 @@ python-dotenv==1.0.0
 PyYAML==6.0.3
 groq==0.31.0
 psycopg[binary]==3.2.3
+pgvector==0.3.6
+sentence-transformers==3.0.1
