@@ -5,7 +5,7 @@
 <h1 align="center">Duke AI Planner</h1>
 
 <p align="center">
-  <b>Plan your JMU semester with AI</b>
+  <b>Plan your JMU semester with Duke AI</b>
 </p>
 
 <p align="center">
@@ -36,7 +36,7 @@ Django backend for AI academic planner made for JMU students that drafts graduat
 | Database | PostgreSQL with [pgvector](https://github.com/pgvector/pgvector) (HNSW index on course embeddings) |
 | Embeddings | `BAAI/bge-small-en-v1.5` via [fastembed](https://github.com/qdrant/fastembed) (ONNX Runtime) |
 | LLM | [Groq](https://groq.com/), `openai/gpt-oss-120b` by default |
-| Serving | Gunicorn + WhiteNoise in Docker, deployed with Dokploy on AWS EC2 behind Traefik |
+| Serving | Gunicorn + WhiteNoise in Docker, deployed with [Dokploy](https://dokploy.com/) on AWS EC2 behind [Traefik](https://github.com/traefik/traefik) |
 
 ## Project layout
 
