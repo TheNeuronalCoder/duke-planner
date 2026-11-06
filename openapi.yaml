@@ -3,7 +3,7 @@ info:
   title: Duke Planner API
   version: 1.0.0
   description: |
-    AI-powered degree planner for JMU students: imports transcripts, live degree audits, semester planning, and a helpful chat assistant.
+    AI academic planner for JMU students that drafts graduation plans and answers degree questions through an LLM chat assistant.
 
 servers:
   - name: Production
@@ -622,7 +622,7 @@ paths:
     post:
       tags: [Assistant]
       operationId: generatePlan
-      summary: Draft a graduation plan with Duke AI
+      summary: Draft a graduation plan
       description: |
         Drafts the semesters the account has left until graduation. Only terms
         after the current one that the account has no semester for are planned.
